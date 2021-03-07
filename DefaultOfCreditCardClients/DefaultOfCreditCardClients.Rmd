@@ -84,7 +84,7 @@ head(df_raw, 10) %>%
 
 
 
-Next, we need to change name of response variable and drop unnecesary column.
+Next we need to change name of response variable and drop unnecesary column.
 
 
 ```{r}
@@ -125,7 +125,9 @@ df <- df_raw %>% mutate(
 
 ```{r}
 
-featuresReview(df) %>% kable() %>% kable_styling(bootstrap_options = "hover") %>% scroll_box(height = "400px")
+featuresReview(df) %>% kable() %>%
+  kable_styling(bootstrap_options = "hover") %>% 
+  scroll_box(height = "400px")
 
 ```
 
@@ -148,6 +150,8 @@ df$MARRIAGE <- imputeFactor(df$MARRIAGE)
 
 ## Variables Types
 
+Finally, we need to cast some variables to integers.
+
 ```{r}
 
 df <- df %>% mutate(across(starts_with("PAY")&!contains("AMT"), as.integer))
@@ -156,6 +160,8 @@ df <- df %>% mutate(DEFAULT = as.integer(DEFAULT))
 ```
 
 ## Learn Test Split
+
+Let's split data set into two parts: learn set and test set in proportion 3:1.
 
 ```{r}
 set.seed(2021)
@@ -167,7 +173,7 @@ df_test <- df[-idx,]
 
 ```
 
-Default Rate after split
+Checking Default Rate after split - need to be roughly equal.
 
 ```{r}
 data.frame(set = c('learn', 'test'),
@@ -191,13 +197,16 @@ df_learn_cont <- df_learn %>% select_if(funs(!is.factor(.)&!is.integer(.)))
 
 
 
+
+## Categorical and discrete variables {.tabset}
+
+Plotting distributions of categorical and descrete variables using utility function plotFactor (utility_functions.R)
+
 ```{r}
 plots_list <- plotFactor(df_learn_fct, colnames(df_learn_fct)) 
 for (i in seq_along(plots_list)){
   plots_list[[i]] <- list(plots_list[[i]], colnames(df_learn_fct)[i])}
 ```
-
-## Categorical and discrete variables {.tabset}
 
 ```{r results = 'asis'}
 for (i in seq_along(plots_list)){
@@ -208,13 +217,17 @@ for (i in seq_along(plots_list)){
 ```
 
 
+
+## Continuous variables {.tabset}
+
+Plotting distributions of continuous variables using utility function plotHistogram (utility_functions.R)
+
 ```{r}
 plots_list <- plotHistogram(df_learn_cont, colnames(df_learn_cont) )
 for (i in seq_along(plots_list)){
   plots_list[[i]] <- list(plots_list[[i]], colnames(df_learn_cont)[i])}
 ```
 
-## Continuous variables {.tabset}
 
 ```{r results = 'asis'}
 for (i in seq_along(plots_list)){
@@ -226,7 +239,8 @@ for (i in seq_along(plots_list)){
 
 ## Correlations
 
-Selection of numerical variables, correlation matrix, corrplot with clusters
+In order to examine possible correlations between variables we are selecting numerical variables and calculating correlation matrix. To visualize correlation matrix we are using corrplot with hierachical clustering to recognize groups of most correlated variables.
+
 
 ```{r}
 df_learn_num <- df_learn %>% select_if(is.numeric) %>% select(-DEFAULT)
@@ -246,8 +260,8 @@ cor_plot <- corrplot(corr = cor_M,
 ```
 
 
-Clusters extraction: hclust on 1-cor_M and cutting a dendrogram
 
+Clusters extraction: plotting cluster dendrogram with parameters matching hclust in corrplot (distance of 1-cor_M) and cutting dendrogram to specific number of clusters.
 
 ```{r}
 
@@ -259,8 +273,9 @@ clust_cut <- data.frame(cluster = cutree(clust_obj, k = 12)) %>% mutate(variable
 
 ```
 
+## Feature selection
 
-Selection of one representative from every cluster based on information value
+Finally, we are selecting one representative from every cluster based on information value.
 
 ```{r}
 
@@ -270,7 +285,8 @@ df_merge <- merge(clust_cut, df_iv, by = 'variable')
 
 df_merge %>% 
   arrange(cluster, -info_value) %>% 
-  kable() %>% kable_styling(full_width = F, bootstrap_options = "hover") %>% scroll_box(height = '300px', width = '300px')
+  kable() %>% 
+  kable_styling(full_width = F, bootstrap_options = "hover") %>% scroll_box(height = '300px', width = '300px')
 
 ```
 
@@ -285,7 +301,7 @@ names_sel_num <- df_sel_numeric %>% pull(variable)
 
 ```
 
-# Weight of Evidence (WoE) transformation
+# WoE transformation
 
 Preparing data frame for Weight of Evidence tranformation
 
@@ -301,6 +317,7 @@ df_learn_woe <- scorecard::woebin_ply(df_woe, bins = df_woebin )
 
 ```
 
+## WoEPlots {.tabset}
 
 ```{r}
 plots_list <- plotWoe(df_woebin, names(df_woebin) )
@@ -308,7 +325,7 @@ for (i in seq_along(plots_list)){
   plots_list[[i]] <- list(plots_list[[i]], names(df_woebin)[i])}
 ```
 
-## WoEPlots {.tabset}
+
 
 ```{r results = 'asis'}
 for (i in seq_along(plots_list)){
@@ -336,7 +353,11 @@ cor_plot2 <- corrplot(cor_M2,
 
 ```
 
+We can see, that there are still quite correlated variables, but for now this is sufficient. Later we will examine Variance Inflation Factor after building the model.
+
 ## Balancing dataset
+
+Due to unequal proportion of Default and Non-Default we need to balance dataset by adding weights to every observation.
 
 ```{r}
 
@@ -346,6 +367,8 @@ weights_vec <- ifelse(df_learn_woe$DEFAULT == 1, 4, 1)
 
 
 ## Building Logistic Regression Model
+
+Due to small number of variables at this point, there is no need to use step function to perform feature selection. We will use error and trial method to select most informative variables. The most importat part is to be careful with estimated coefficient: because variables are transformed by WoE, coefficients should be all positive. Negative coefficient would suggest reverse relationship between predictor and response variable from what was obtained during WoE transformation.
 
 ```{r}
 vars_names <- c(      
@@ -379,14 +402,17 @@ summary(model)
 
 ## VIF
 
+Finally, last check for some collinearity of variables by calculating Variance Inflation Factor.
+
 ```{r}
 vif(model)
 ```
 
+Vifs below 1.5 suggests very small amount of collinearity (anything above 2 should be suspicious).
 
 ## Prediction
 
-Transforming test set and gathering results in one data frame with original variables, WoE transformed variables and prediction.
+Next, we will transform test set and gather results in one data frame with original variables, WoE transformed variables and prediction.
 
 ```{r result = 'hide'}
 
@@ -410,11 +436,17 @@ df_final$y_pred_bin <- cut(
   include.lowest = TRUE, 
   right = TRUE)
 
+
+head(df_final) %>% kable() %>% 
+  kable_styling(bootstrap_options = "hover") %>%
+  scroll_box(width = "800px", height = "400px")
+
 ```
 
 
-
 ## Diagnostics
+
+For diagnostics we will use utility functions which I've created to show distributions of Goods/Bads, ROC curve and Gain Chart.
 
 ```{r}
 df_final %>% 
@@ -440,6 +472,10 @@ for (i in seq_along(df_list)){
   df_list[[i]] <- list(df_list[[i]], names(df_list)[i])}
 ```
 
+The result is quite satisfying. Model didn't overfit, has good predictive power and is easy to explain, which is very important concerning nature of business problem (risk among credit cards clients). Model can help in recognizing potential defaulting clients, but there is a large group of Bad Clients (Default = 1), which haven't been spotted (received low probability of default: peak around probability of 0.4), which is a space for further improvement. To summarise we will create scorecard for this model.
+
+
+
 ## Scorecard {.tabset}
 
 ```{r results = 'asis'}
@@ -452,7 +488,9 @@ for (i in seq_along(df_list)){
 
 
 
-# Random Forest approach
+# BONUS: Random Forest approach
+
+To establish reference point for our logistic regression model, we will quickly build random forest model (using very fast ranger package) for the same data (before WoE transformation) with some arbitrarily chosen hyperparameters, with no hyperparameter tuning.
 
 ```{r}
 library(ranger)
@@ -461,6 +499,8 @@ ranger_model <- ranger(DEFAULT ~.,
                        data = df_learn, 
                        probability = TRUE, 
                        max.depth = 7, 
+                       min.node.size = 20,
+                       mtry= 5,
                        case.weights = weights_vec)
 
 df_ranger_learn <- df_learn
@@ -501,7 +541,7 @@ plotGainChart(df_ranger_final, 'y_pred', 'DEFAULT', 'set')
 
 ```
 
-
+Model resulted in Gini close to 0.54 on test set, which is significantly better comparing to 0.51 for previous model. Random forest model is slightly overfitted, so there is potential for improvement, so the result for test set could be even better. There is enhancement in recognizing Bad Clients: peak of not recognized Bad Clients is slightly lower than before and it could suggest, that ensembled tree method can recognize some pattern which wasn't detectable in linear model built on WoE transformed data (which itself is huge loss of information).
 
 
 
