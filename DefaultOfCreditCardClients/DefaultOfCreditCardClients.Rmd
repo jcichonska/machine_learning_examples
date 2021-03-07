@@ -1,0 +1,507 @@
+---
+title: "Scoring model for Default of Credit Card Clients"
+date: "`r Sys.Date()`"
+author: Julita Cichońska
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    self_contained: true
+    thumbnails: true
+    lightbox: true
+    gallery: false
+    highlight: tango
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, error = FALSE, message = FALSE, out.width = 750)
+
+```
+
+# Intro
+
+Our goal is to build a scoring model to assess probability of default of credit card clients. We are going to use a dataset which can be found here:
+
+<https://archive.ics.uci.edu/ml/datasets/default+of+credit+card+clients>.
+
+
+## Features Description
+
+<details>
+  <summary>Source reference</summary>
+  
+This research employed a binary variable, default payment (Yes = 1, No = 0), as the response variable. This study reviewed the literature and used the following 23 variables as explanatory variables:
+
+X1: Amount of the given credit (NT dollar): it includes both the individual consumer credit and his/her family (supplementary) credit.
+
+X2: Gender (1 = male; 2 = female).
+
+X3: Education (1 = graduate school; 2 = university; 3 = high school; 4 = others).
+
+X4: Marital status (1 = married; 2 = single; 3 = others).
+
+X5: Age (year).
+
+X6 - X11: History of past payment. We tracked the past monthly payment records (from April to September, 2005) as follows: X6 = the repayment status in September, 2005; X7 = the repayment status in August, 2005; . . .;X11 = the repayment status in April, 2005. The measurement scale for the repayment status is: -1 = pay duly; 1 = payment delay for one month; 2 = payment delay for two months; . . .; 8 = payment delay for eight months; 9 = payment delay for nine months and above.
+
+X12-X17: Amount of bill statement (NT dollar). X12 = amount of bill statement in September, 2005; X13 = amount of bill statement in August, 2005; . . .; X17 = amount of bill statement in April, 2005.
+
+X18-X23: Amount of previous payment (NT dollar). X18 = amount paid in September, 2005; X19 = amount paid in August, 2005; . . .;X23 = amount paid in April, 2005.
+</details>
+
+
+## Data Loading
+
+
+```{r libraries}
+
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(corrplot)
+library(scorecard)
+library(stringr)
+library(kableExtra)
+library(gridExtra)
+source('utility_functions.R')
+
+```
+
+Firstly, we are going to load the dataset from xls file.
+
+```{r read_data}
+
+df_raw <- read_excel(path = 'default of credit card clients.xls', col_names = TRUE, skip = 1)
+
+head(df_raw, 10) %>% 
+  kable() %>% 
+  kable_styling(bootstrap_options = "hover") %>% 
+  scroll_box(width = "800px", height = "400px")
+
+```
+
+
+
+Next, we need to change name of response variable and drop unnecesary column.
+
+
+```{r}
+
+colnames(df_raw)[25] <- 'DEFAULT'
+df_raw$ID <- NULL
+
+```
+
+
+# Preprocessing
+
+
+## Recoding
+
+
+We will focus mainly on categorical features: SEX, EDUCATION and MARRIAGE. We will decode those features to original values, as we will transform variables with Weight of Evidence method later on.
+
+
+```{r}
+
+df <- df_raw %>% mutate(
+                    SEX = as.factor(case_when(SEX == 1 ~ 'male',
+                                              SEX == 2 ~ 'female')),
+                    EDUCATION = as.factor(case_when(EDUCATION == 1 ~'graduate school',
+                                                    EDUCATION == 2 ~'university',
+                                                    EDUCATION == 3 ~'high school',
+                                                    EDUCATION == 4 ~'others')),
+                    MARRIAGE = as.factor(case_when(MARRIAGE == 1 ~ 'married',
+                                                   MARRIAGE == 2 ~ 'single',
+                                                   MARRIAGE == 3 ~ 'others')))
+
+```
+
+
+## Dataset review
+
+
+```{r}
+
+featuresReview(df) %>% kable() %>% kable_styling(bootstrap_options = "hover") %>% scroll_box(height = "400px")
+
+```
+
+## Missing Data Imputation
+
+As we can see in the summary above, there are missing values in variables EDUCATION and MARRIAGE.
+
+```{r}
+
+imputeFactor <- function(v_col, string_imp = 'missing'){
+  levels(v_col) <- c(levels(v_col) , string_imp)
+  v_col[is.na(v_col)] <- string_imp
+  v_col
+}
+
+df$EDUCATION <- imputeFactor(df$EDUCATION)
+df$MARRIAGE <- imputeFactor(df$MARRIAGE)
+
+```
+
+## Variables Types
+
+```{r}
+
+df <- df %>% mutate(across(starts_with("PAY")&!contains("AMT"), as.integer))
+df <- df %>% mutate(DEFAULT = as.integer(DEFAULT))
+
+```
+
+## Learn Test Split
+
+```{r}
+set.seed(2021)
+n_obs <- dim(df)[1]
+idx <- sample(1:n_obs, size = 0.75*n_obs, replace = FALSE)
+
+df_learn <- df[idx,]
+df_test <- df[-idx,]
+
+```
+
+Default Rate after split
+
+```{r}
+data.frame(set = c('learn', 'test'),
+                   default_rate = rbind(mean(df_learn$DEFAULT),mean(df_test$DEFAULT))
+) %>% kable() %>% kable_styling(full_width = F)
+```
+
+
+# Features Analysis
+
+## Distributions
+
+
+Selecting names of variables to plot
+
+```{r asis = TRUE}
+
+df_learn_fct <- df_learn %>% select_if(funs(is.factor(.)||is.integer(.)))
+df_learn_cont <- df_learn %>% select_if(funs(!is.factor(.)&!is.integer(.)))
+```
+
+
+
+```{r}
+plots_list <- plotFactor(df_learn_fct, colnames(df_learn_fct)) 
+for (i in seq_along(plots_list)){
+  plots_list[[i]] <- list(plots_list[[i]], colnames(df_learn_fct)[i])}
+```
+
+## Categorical and discrete variables {.tabset}
+
+```{r results = 'asis'}
+for (i in seq_along(plots_list)){
+  tmp <- plots_list[[i]]
+  cat('###', tmp[[2]], " \n")
+  print(tmp[[1]])
+  cat('\n\n')}
+```
+
+
+```{r}
+plots_list <- plotHistogram(df_learn_cont, colnames(df_learn_cont) )
+for (i in seq_along(plots_list)){
+  plots_list[[i]] <- list(plots_list[[i]], colnames(df_learn_cont)[i])}
+```
+
+## Continuous variables {.tabset}
+
+```{r results = 'asis'}
+for (i in seq_along(plots_list)){
+  tmp <- plots_list[[i]]
+  cat('###', tmp[[2]], " \n")
+  print(tmp[[1]])
+  cat('\n\n')}
+```
+
+## Correlations
+
+Selection of numerical variables, correlation matrix, corrplot with clusters
+
+```{r}
+df_learn_num <- df_learn %>% select_if(is.numeric) %>% select(-DEFAULT)
+
+cor_M <- cor(df_learn_num)
+
+cor_plot <- corrplot(corr = cor_M,
+                     method = 'circle', 
+                     type = 'full', 
+                     order = 'hclust', 
+                     hclust.method = 'complete',
+                     addrect = 12, 
+                     rect.col = 'tomato3',
+                     tl.col = 'grey20', 
+                     tl.cex = 0.6, 
+                     tl.srt = 45)
+```
+
+
+Clusters extraction: hclust on 1-cor_M and cutting a dendrogram
+
+
+```{r}
+
+clust_obj <- hclust(as.dist(1-cor_M))
+
+plot(clust_obj)
+
+clust_cut <- data.frame(cluster = cutree(clust_obj, k = 12)) %>% mutate(variable = rownames(.))
+
+```
+
+
+Selection of one representative from every cluster based on information value
+
+```{r}
+
+df_iv <- data.frame(scorecard::iv(df_learn %>% select_if(is.numeric), 'DEFAULT'))
+ 
+df_merge <- merge(clust_cut, df_iv, by = 'variable')
+
+df_merge %>% 
+  arrange(cluster, -info_value) %>% 
+  kable() %>% kable_styling(full_width = F, bootstrap_options = "hover") %>% scroll_box(height = '300px', width = '300px')
+
+```
+
+
+```{r}
+df_sel_numeric <- df_merge %>% 
+  group_by(cluster) %>% 
+  arrange(-info_value) %>% 
+  top_n(1) %>% arrange(cluster)
+
+names_sel_num <- df_sel_numeric %>% pull(variable)
+
+```
+
+# Weight of Evidence (WoE) transformation
+
+Preparing data frame for Weight of Evidence tranformation
+
+```{r}
+
+names_sel_all <- c(names_sel_num, names(df_learn_fct),  'DEFAULT')
+
+df_woe <- df_learn %>% select(all_of(names_sel_all))
+
+df_woebin <- scorecard::woebin(df_woe, 'DEFAULT')
+
+df_learn_woe <- scorecard::woebin_ply(df_woe, bins = df_woebin )
+
+```
+
+
+```{r}
+plots_list <- plotWoe(df_woebin, names(df_woebin) )
+for (i in seq_along(plots_list)){
+  plots_list[[i]] <- list(plots_list[[i]], names(df_woebin)[i])}
+```
+
+## WoEPlots {.tabset}
+
+```{r results = 'asis'}
+for (i in seq_along(plots_list)){
+  tmp <- plots_list[[i]]
+  cat('###', tmp[[2]], " \n")
+  print(tmp[[1]])
+  cat('\n\n')}
+```
+
+
+# Model
+
+## Correlations check
+
+```{r}
+
+cor_M2 <- cor(df_learn_woe )
+cor_plot2 <- corrplot(cor_M2,
+                     method = 'circle', 
+                     type = 'full', 
+                     order = 'hclust', 
+                     tl.col = 'grey20', 
+                     tl.cex = 0.6, 
+                     tl.srt = 45)
+
+```
+
+## Balancing dataset
+
+```{r}
+
+weights_vec <- ifelse(df_learn_woe$DEFAULT == 1, 4, 1)
+
+```
+
+
+## Building Logistic Regression Model
+
+```{r}
+vars_names <- c(      
+"LIMIT_BAL_woe"
+#,"AGE_woe"       
+,"PAY_0_woe"     
+#,"PAY_2_woe"     
+,"PAY_4_woe"    
+#,"BILL_AMT6_woe" 
+,"PAY_AMT1_woe"  
+,"PAY_AMT2_woe"  
+#,"PAY_AMT3_woe"  
+#,"PAY_AMT4_woe"  
+,"PAY_AMT5_woe" 
+,"PAY_AMT6_woe"  
+,"SEX_woe"       
+#,"EDUCATION_woe" 
+,"MARRIAGE_woe"  
+)
+
+formula <- as.formula(paste("DEFAULT ~ ", paste(vars_names, collapse= "+")))
+
+model <- glm(df_learn_woe, 
+             formula = formula, 
+             family = 'binomial', 
+             weights =  weights_vec)
+
+summary(model)
+
+```
+
+## VIF
+
+```{r}
+vif(model)
+```
+
+
+## Prediction
+
+Transforming test set and gathering results in one data frame with original variables, WoE transformed variables and prediction.
+
+```{r result = 'hide'}
+
+# LEARN_SET
+df_learn_final <- cbind(df_learn  %>% select(-DEFAULT), df_learn_woe)
+df_learn_final$y_pred <- model$fitted.values
+df_learn_final$set <- 'learn'
+
+# TEST_SET
+df_test_sel <- df_test %>% select(all_of(c(names(df_woebin), 'DEFAULT')))
+df_test_woe <- scorecard::woebin_ply(df_test_sel, bins = df_woebin )
+df_test_final <- cbind(df_test %>% select(-DEFAULT), df_test_woe)
+df_test_final$y_pred <- predict(model, df_test_woe, type = 'response' )
+df_test_final$set <- 'test'
+
+# FINAL_SET
+df_final <- rbind(df_learn_final, df_test_final)
+df_final$y_pred_bin <- cut(
+  df_final$y_pred, 
+  breaks = quantile(df_final$y_pred, probs = seq(0, 1, by = 0.1)), 
+  include.lowest = TRUE, 
+  right = TRUE)
+
+```
+
+
+
+## Diagnostics
+
+```{r}
+df_final %>% 
+  group_by(set) %>% 
+  summarise(
+    Gini = MLmetrics::Gini(y_pred, DEFAULT),
+    AUC = MLmetrics::AUC(y_pred, DEFAULT)
+  ) %>% 
+  kable() %>% kable_styling(full_width = F)
+
+plotGoodBadDist(df_final, y_pred = 'y_pred', y_real = 'DEFAULT', set_var = 'set' )
+plotSuccessRateInBins(df_final,'y_pred_bin','DEFAULT', 'set', 'Default Rate' )
+plotROC(df_final$DEFAULT,df_final$y_pred, n_cutoff = 100, df_final$set)
+plotGainChart(df_final, 'y_pred', 'DEFAULT', 'set')
+
+
+```
+
+```{r}
+df_list <- scorecard(df_woebin, model)
+
+for (i in seq_along(df_list)){
+  df_list[[i]] <- list(df_list[[i]], names(df_list)[i])}
+```
+
+## Scorecard {.tabset}
+
+```{r results = 'asis'}
+for (i in seq_along(df_list)){
+  tmp <- df_list[[i]]
+  cat('###', tmp[[2]], " \n")
+  print(data.frame(tmp[[1]]) %>%kable() %>% kable_styling() %>% scroll_box(width = '750px'))
+  cat('\n\n')}
+```
+
+
+
+# Random Forest approach
+
+```{r}
+library(ranger)
+
+ranger_model <- ranger(DEFAULT ~., 
+                       data = df_learn, 
+                       probability = TRUE, 
+                       max.depth = 7, 
+                       case.weights = weights_vec)
+
+df_ranger_learn <- df_learn
+df_ranger_learn$y_pred <- ranger_model$predictions[,2]
+df_ranger_learn$set <- 'learn'
+
+
+df_ranger_test <- df_test
+df_ranger_test$y_pred <- predict(ranger_model, data = df_test, type = "response")$prediction[,2]
+df_ranger_test$set <- 'test'
+
+df_ranger_final <- rbind(df_ranger_learn, df_ranger_test)
+
+df_ranger_final$y_pred_bin <- cut(df_ranger_final$y_pred, 
+                                  breaks = quantile(df_ranger_final$y_pred,
+                                                    probs = seq(0, 1, by = 0.1)), 
+                                  include.lowest = TRUE, 
+                                  right = TRUE)
+
+```
+
+## Diagnostics 
+
+
+```{r}
+df_ranger_final %>% 
+  group_by(set) %>% 
+  summarise(
+    Gini = MLmetrics::Gini(y_pred, DEFAULT),
+    AUC = MLmetrics::AUC(y_pred, DEFAULT)
+  ) %>% 
+  kable() %>% kable_styling(full_width = F)
+
+plotGoodBadDist(df_ranger_final,'y_pred', 'DEFAULT', 'set' )
+plotSuccessRateInBins(df_ranger_final,'y_pred_bin','DEFAULT', 'set', 'Default Rate' )
+plotROC(df_ranger_final$DEFAULT,df_ranger_final$y_pred, n_cutoff = 100, df_ranger_final$set)
+plotGainChart(df_ranger_final, 'y_pred', 'DEFAULT', 'set')
+
+```
+
+
+
+
+
