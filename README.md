@@ -1,3 +1,3 @@
-# ML_in_a_flash
+# Machine Learning Examples
 
 Small ML projects with publicly available datasets
